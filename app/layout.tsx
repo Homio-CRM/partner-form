@@ -2,9 +2,9 @@ import type { Metadata } from 'next'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'v0 App',
-  description: 'Created with v0',
-  generator: 'v0.dev',
+  title: 'Cadastro de Parceiros - Homio',
+  description: 'Formulário para se cadastrar como aprceiro da homio',
+  generator: 'Homio CRM',
 }
 
 export default function RootLayout({
