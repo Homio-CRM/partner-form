@@ -2,8 +2,11 @@ import type { Metadata } from 'next'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'Cadastro de Parceiros - Homio',
-  description: 'Formulário para se cadastrar como aprceiro da homio',
+  title: 'Cadastro HPN | Homio',
+  description: 'Formulário para se cadastrar como parceiro da homio',
+  icons: {
+    icon: "/favicon.svg",
+  },
   generator: 'Homio CRM',
 }
 
