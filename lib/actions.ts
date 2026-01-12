@@ -1,7 +1,40 @@
 "use server"
 
-const DIRECTUS_BASE_URL = "https://cms.homio.com.br"
-const DIRECTUS_TOKEN = "AevKeW6sZk8OAPfMqsTG_oxXbrYBwjU-"
+const DIRECTUS_BASE_URL = process.env.DIRECTUS_BASE_URL
+const DIRECTUS_TOKEN = process.env.DIRECTUS_TOKEN
+const FETCH_TIMEOUT = 10000 // 10 segundos
+
+// Validar variáveis de ambiente
+if (!DIRECTUS_BASE_URL || !DIRECTUS_TOKEN) {
+  throw new Error(
+    "Variáveis de ambiente obrigatórias não configuradas: DIRECTUS_BASE_URL e DIRECTUS_TOKEN"
+  )
+}
+
+// Função auxiliar para fetch com timeout
+async function fetchWithTimeout(
+  url: string,
+  options: RequestInit = {},
+  timeout: number = FETCH_TIMEOUT
+): Promise<Response> {
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), timeout)
+
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    })
+    clearTimeout(timeoutId)
+    return response
+  } catch (error) {
+    clearTimeout(timeoutId)
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error("Timeout: A requisição demorou muito para responder")
+    }
+    throw error
+  }
+}
 
 // Função para gerar ID aleatório de 10 caracteres
 function generateRandomId(): string {
@@ -16,14 +49,18 @@ function generateRandomId(): string {
 // Função para verificar se o urlId já existe
 async function checkUrlIdExists(urlId: string): Promise<boolean> {
   try {
-    const response = await fetch(`${DIRECTUS_BASE_URL}/items/partner_logins?filter[urlId][_eq]=${urlId}`, {
-      headers: {
-        Authorization: `Bearer ${DIRECTUS_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-    })
+    const response = await fetchWithTimeout(
+      `${DIRECTUS_BASE_URL}/items/partner_logins?filter[urlId][_eq]=${urlId}`,
+      {
+        headers: {
+          Authorization: `Bearer ${DIRECTUS_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+      }
+    )
 
     if (!response.ok) {
+      console.error(`Erro ao verificar urlId: ${response.status} ${response.statusText}`)
       throw new Error("Erro ao verificar urlId")
     }
 
@@ -31,24 +68,25 @@ async function checkUrlIdExists(urlId: string): Promise<boolean> {
     return data.data && data.data.length > 0
   } catch (error) {
     console.error("Erro ao verificar urlId:", error)
-    return false
+    throw error
   }
 }
 
 // Função para verificar se o nome já existe
 async function checkNameExists(name: string): Promise<boolean> {
   try {
-    const response = await fetch(
+    const response = await fetchWithTimeout(
       `${DIRECTUS_BASE_URL}/items/partner_logins?filter[name][_eq]=${encodeURIComponent(name)}`,
       {
         headers: {
           Authorization: `Bearer ${DIRECTUS_TOKEN}`,
           "Content-Type": "application/json",
         },
-      },
+      }
     )
 
     if (!response.ok) {
+      console.error(`Erro ao verificar nome: ${response.status} ${response.statusText}`)
       throw new Error("Erro ao verificar nome")
     }
 
@@ -56,7 +94,7 @@ async function checkNameExists(name: string): Promise<boolean> {
     return data.data && data.data.length > 0
   } catch (error) {
     console.error("Erro ao verificar nome:", error)
-    return false
+    throw error
   }
 }
 
@@ -66,16 +104,27 @@ async function generateUniqueUrlId(): Promise<string> {
   let attempts = 0
   const maxAttempts = 10
 
-  while ((await checkUrlIdExists(urlId)) && attempts < maxAttempts) {
+  while (attempts < maxAttempts) {
+    try {
+      const exists = await checkUrlIdExists(urlId)
+      if (!exists) {
+        return urlId
+      }
+    } catch (error) {
+      console.error(`Erro ao verificar urlId na tentativa ${attempts + 1}:`, error)
+      // Se houver erro de timeout ou conexão, tentar novamente com novo ID
+      if (attempts < maxAttempts - 1) {
+        urlId = generateRandomId()
+        attempts++
+        continue
+      }
+      throw error
+    }
     urlId = generateRandomId()
     attempts++
   }
 
-  if (attempts >= maxAttempts) {
-    throw new Error("Não foi possível gerar um ID único")
-  }
-
-  return urlId
+  throw new Error("Não foi possível gerar um ID único após várias tentativas")
 }
 
 export async function createPartner(formData: FormData) {
@@ -112,32 +161,62 @@ export async function createPartner(formData: FormData) {
     }
 
     // Enviar para o Directus
-    const response = await fetch(`${DIRECTUS_BASE_URL}/items/partner_logins`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${DIRECTUS_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(partnerData),
-    })
+    console.log("Enviando dados para Directus...")
+    const response = await fetchWithTimeout(
+      `${DIRECTUS_BASE_URL}/items/partner_logins`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${DIRECTUS_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(partnerData),
+      }
+    )
+
+    console.log(`Resposta do Directus: ${response.status} ${response.statusText}`)
 
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}))
+      let errorData = {}
+      try {
+        errorData = await response.json()
+      } catch (e) {
+        const text = await response.text().catch(() => "")
+        console.error("Erro ao parsear resposta do Directus:", text)
+      }
       console.error("Erro do Directus:", errorData)
 
       if (response.status === 400) {
         return { success: false, error: "Dados inválidos. Verifique as informações e tente novamente." }
       }
 
+      if (response.status === 401) {
+        return { success: false, error: "Erro de autenticação. Contate o suporte." }
+      }
+
+      if (response.status === 403) {
+        return { success: false, error: "Sem permissão para realizar esta ação." }
+      }
+
       return { success: false, error: "Erro ao cadastrar parceiro. Tente novamente." }
     }
 
     const result = await response.json()
-    console.log("Parceiro criado:", result)
+    console.log("Parceiro criado com sucesso:", result)
 
     return { success: true, data: result.data }
   } catch (error) {
     console.error("Erro ao criar parceiro:", error)
+    
+    if (error instanceof Error) {
+      if (error.message.includes("Timeout")) {
+        return { success: false, error: "A requisição demorou muito. Verifique sua conexão e tente novamente." }
+      }
+      if (error.message.includes("fetch")) {
+        return { success: false, error: "Erro de conexão. Verifique sua internet e tente novamente." }
+      }
+    }
+    
     return { success: false, error: "Erro interno. Tente novamente mais tarde." }
   }
 }
